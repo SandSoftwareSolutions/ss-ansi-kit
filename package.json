@@ -1,0 +1,45 @@
+{
+  "name": "@sandsoftwaresolutions/ansi-kit",
+  "version": "0.1.0",
+  "description": "Colors, tables, progress bars and symbols for CLIs: respects NO_COLOR, aligns wide characters, nests styles correctly.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "cli",
+    "ansi",
+    "color",
+    "table",
+    "terminal",
+    "no-color"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SandSoftwareSolutions/ss-ansi-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SandSoftwareSolutions/ss-ansi-kit/issues"
+  },
+  "homepage": "https://github.com/SandSoftwareSolutions/ss-ansi-kit#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
