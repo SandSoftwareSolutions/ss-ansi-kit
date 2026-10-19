@@ -1,6 +1,6 @@
 const ESC = "\u001b";
 // CSI sequences (colors, cursor moves) and OSC sequences (titles, hyperlinks).
-const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
+const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b)|$)|\u001b[@-Z\\-_]/g;
 
 /** Removes colors and other terminal control sequences from text. */
 export function strip(text) {
@@ -14,6 +14,7 @@ export function strip(text) {
  */
 export function colorLevel(stream = process.stdout, env = process.env) {
   if (env.FORCE_COLOR !== undefined && env.FORCE_COLOR !== "") {
+    if (env.FORCE_COLOR === "false") return 0;
     const forced = env.FORCE_COLOR === "true" ? 1 : Number(env.FORCE_COLOR);
     return Number.isInteger(forced) ? Math.max(0, Math.min(3, forced)) : 1;
   }
@@ -68,7 +69,12 @@ export function createColors({ level = colorLevel() } = {}) {
     const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
     return colors.rgb(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));
   };
-  colors.link = (url, text = url) => (enabled && level >= 1 ? `${ESC}]8;;${url}${ESC}\\${text}${ESC}]8;;${ESC}\\` : text === url ? url : `${text} (${url})`);
+  colors.link = (url, text = url) => {
+    // The URL sits inside an escape sequence: a BEL, ESC or other control character in it would end the link early and let the rest be
+    // read as terminal commands (a new title, a clipboard write...).
+    if (typeof url !== "string" || /[\u0000-\u001f\u007f-\u009f]/.test(url)) throw new TypeError("ansi-kit: link needs a URL text without control characters");
+    return enabled && level >= 1 ? `${ESC}]8;;${url}${ESC}\\${text}${ESC}]8;;${ESC}\\` : text === url ? url : `${text} (${url})`;
+  };
   return colors;
 }
 
@@ -77,8 +83,11 @@ const wideRanges = [[0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x340
 function graphemeWidth(g) {
   const cp = g.codePointAt(0);
   if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
-  if (/^\p{M}+$/u.test(g)) return 0;
-  if (/\p{Extended_Pictographic}/u.test(g) || /\p{Regional_Indicator}/u.test(g)) return 2;
+  if (/^[\p{M}\p{Cf}]+$/u.test(g)) return 0; // combining marks, joiners, zero-width space
+  if (/\p{Regional_Indicator}/u.test(g)) return 2; // flags
+  // Emoji that terminals draw wide: those that are emoji by default, or asked for with U+FE0F (a heart with the selector is wide, a
+  // plain heart, a check mark, (c) and the like are one column, which is how terminals draw them).
+  if (/\p{Emoji_Presentation}|\p{Emoji_Modifier}|\uFE0F/u.test(g)) return 2;
   return wideRanges.some(([a, b]) => cp >= a && cp <= b) ? 2 : 1;
 }
 
@@ -99,25 +108,41 @@ export function pad(text, columns, align = "left") {
   return text + " ".repeat(gap);
 }
 
-/** Cuts to a visible width (with `…` by default), keeping colors working: any style that is open at the cut is closed. */
+/** Cuts to a visible width (with `…` by default), keeping colors working: any style or hyperlink that is open at the cut is closed. */
 export function truncate(text, columns, { ellipsis = "…" } = {}) {
   if (!Number.isInteger(columns) || columns < 0) throw new RangeError("ansi-kit: columns must be a whole number, 0 or more");
+  text = String(text);
   if (width(text) <= columns) return text;
-  const room = Math.max(0, columns - width(ellipsis));
+  const dots = [...segmenter.segment(String(ellipsis))].map((x) => x.segment);
+  if (width(ellipsis) > columns) {
+    // not even the ellipsis fits: as much of it as does
+    let fit = "";
+    let used = 0;
+    for (const d of dots) {
+      if (used + graphemeWidth(d) > columns) break;
+      fit += d;
+      used += graphemeWidth(d);
+    }
+    return fit;
+  }
+  const room = columns - width(ellipsis);
   let out = "";
   let used = 0;
   let open = false;
-  const tokens = String(text).split(new RegExp(`(${ANSI.source})`, "g"));
+  let link = false;
+  const tokens = text.split(new RegExp(`(${ANSI.source})`, "g"));
   for (const token of tokens) {
     if (token === "") continue;
     if (new RegExp(`^(?:${ANSI.source})$`).test(token)) {
       out += token;
-      open = !/^\u001b\[(?:0|)m$/.test(token);
+      const hyperlink = /^\u001b\]8;[^;\u0007\u001b]*;([^\u0007\u001b]*)/.exec(token);
+      if (hyperlink) link = hyperlink[1] !== "";
+      else open = !/^\u001b\[(?:0|)m$/.test(token);
       continue;
     }
     for (const { segment } of segmenter.segment(token)) {
       const w = graphemeWidth(segment);
-      if (used + w > room) return out + (open ? `${ESC}[0m` : "") + ellipsis;
+      if (used + w > room) return out + (open ? `${ESC}[0m` : "") + (link ? `${ESC}]8;;${ESC}\\` : "") + ellipsis;
       out += segment;
       used += w;
     }
@@ -139,10 +164,12 @@ const BORDERS = {
  */
 export function table(rows, { header, align = [], border = "none", maxWidth, padding = 1, gap = 2 } = {}) {
   if (!Array.isArray(rows)) throw new TypeError("ansi-kit: rows must be an array of arrays");
-  if (!(border in BORDERS)) throw new RangeError('ansi-kit: border must be "none", "simple" or "rounded"');
+  if (!Object.hasOwn(BORDERS, border)) throw new RangeError('ansi-kit: border must be "none", "simple" or "rounded"');
+  if (!rows.every(Array.isArray) || (header !== undefined && !Array.isArray(header))) throw new TypeError("ansi-kit: rows must be an array of arrays");
+  for (const [name, value] of [["padding", padding], ["gap", gap]]) if (!Number.isInteger(value) || value < 0) throw new RangeError(`ansi-kit: ${name} must be a whole number, 0 or more`);
   const all = header ? [header, ...rows] : rows;
   const columns = Math.max(0, ...all.map((r) => r.length));
-  const cell = (r, i) => (r[i] === undefined || r[i] === null ? "" : String(r[i]).replace(/\r?\n/g, " "));
+  const cell = (r, i) => (r[i] === undefined || r[i] === null ? "" : String(r[i]).replace(/\r?\n|[\t\r]/g, " "));
   const widths = Array.from({ length: columns }, (_, i) => Math.max(1, ...all.map((r) => width(cell(r, i)))));
   const b = BORDERS[border];
   const overhead = b ? columns * (2 * padding + 1) + 1 : (columns - 1) * gap;
@@ -173,6 +200,7 @@ export function table(rows, { header, align = [], border = "none", maxWidth, pad
 /** `progressBar(0.4)` is `"████████░░░░░░░░░░░░ 40%"`. A fraction from 0 to 1. */
 export function progressBar(fraction, { width: size = 20, filled = "█", empty = "░", showPercent = true } = {}) {
   if (!Number.isFinite(fraction)) throw new TypeError("ansi-kit: progressBar needs a number from 0 to 1");
+  if (!Number.isInteger(size) || size < 0) throw new RangeError("ansi-kit: width must be a whole number, 0 or more");
   const f = Math.max(0, Math.min(1, fraction));
   const done = Math.round(f * size);
   return `${filled.repeat(done)}${empty.repeat(size - done)}${showPercent ? ` ${Math.round(f * 100)}%` : ""}`;
@@ -191,10 +219,14 @@ export function spinnerFrames({ unicode = true } = {}) {
 }
 
 /** Control sequences for live output: `process.stdout.write(cursor.up(1) + cursor.eraseLine + "new text")`. Only use them when the output is a terminal. */
+const count = (n) => {
+  if (!Number.isInteger(n) || n < 0) throw new RangeError("ansi-kit: cursor moves need a whole number, 0 or more");
+  return n;
+};
 export const cursor = {
-  up: (n = 1) => `${ESC}[${n}A`,
-  down: (n = 1) => `${ESC}[${n}B`,
-  toColumn: (n = 1) => `${ESC}[${n}G`,
+  up: (n = 1) => (count(n) === 0 ? "" : `${ESC}[${n}A`), // ESC[0A would still move one line
+  down: (n = 1) => (count(n) === 0 ? "" : `${ESC}[${n}B`),
+  toColumn: (n = 1) => `${ESC}[${Math.max(1, count(n))}G`,
   eraseLine: `${ESC}[2K\r`,
   hide: `${ESC}[?25l`,
   show: `${ESC}[?25h`

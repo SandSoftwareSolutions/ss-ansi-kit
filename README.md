@@ -44,4 +44,5 @@ console.log(truncate(longLine, process.stdout.columns - 1));
 - **Tables:** `border: "none" | "simple" | "rounded"`, per-column `align`, and `maxWidth` to narrow the widest columns with an ellipsis. Cells with line breaks are flattened.
 - **Symbols** (`ok`, `fail`, `warn`, `info`, `arrow`...) fall back to ASCII on old Windows consoles; `spinnerFrames()` and `cursor` help with live output.
 - `strip(text)` removes colors, cursor moves and links, for log files and for comparing output in tests.
-- `c.link(url, text)` makes a clickable link in terminals that support it and `text (url)` elsewhere.
+- `c.link(url, text)` makes a clickable link in terminals that support it and `text (url)` elsewhere. It throws if the URL contains a control character, because that could close the link early and let the rest be read as terminal commands. Text you print that comes from users can still contain escape sequences: run it through `strip()` first.
+- `width()` counts emoji (and anything followed by U+FE0F) as two columns and `©`, `✔`, `★`, `❤` as one, which is how terminals draw them; zero-width characters count as none. Tabs in table cells become spaces. `FORCE_COLOR=false` means no colors. `truncate` also closes an open hyperlink and never returns more than `columns` wide, even when the ellipsis does not fit.

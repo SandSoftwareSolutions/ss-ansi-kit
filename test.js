@@ -135,3 +135,70 @@ test("progress bar, symbols, spinner, cursor", () => {
   assert.equal(cursor.up(2), "\u001b[2A");
   assert.equal(cursor.eraseLine, "\u001b[2K\r");
 });
+
+test("width: the library's own symbols and ordinary signs are one column, emoji and CJK two, joiners none", () => {
+  const symbolsWidth = Object.values(symbols({ unicode: true })).map(width);
+  assert.deepEqual(symbolsWidth, symbolsWidth.map(() => 1));
+  for (const one of ["©", "®", "™", "★", "✔", "✖", "⚠", "ℹ", "❤", "→", "•", "é", "é", "ｱ"]) assert.equal(width(one), 1, one);
+  for (const two of ["✅", "❤️", "⚠️", "👍🏽", "🇳🇱", "👨‍👩‍👧", "漢", "Ａ", "1️⃣"]) assert.equal(width(two), 2, two);
+  assert.equal(width("a​b"), 2); // zero-width space
+  assert.equal(width("a‍b"), 2);
+  assert.equal(width("\u001b[31mred\u001b[39m"), 3);
+});
+
+test("a table with symbols and wide letters lines up (every line has the same width)", () => {
+  const s = symbols({ unicode: true });
+  const out = table([[`${s.ok} build`, "© 2026"], [`${s.warn} lint`, "日本語"], ["✅ done", "x"]], { header: ["step", "note"], border: "rounded" });
+  const widths = out.split("\n").map(width);
+  assert.ok(widths.every((w) => w === widths[0]), widths.join(","));
+});
+
+test("FORCE_COLOR=false means no colors", () => {
+  assert.equal(colorLevel({ isTTY: true }, { FORCE_COLOR: "false" }), 0);
+  assert.equal(colorLevel({ isTTY: false }, { FORCE_COLOR: "true" }), 1);
+  assert.equal(colorLevel({ isTTY: true }, { FORCE_COLOR: "0", COLORTERM: "truecolor" }), 0);
+  assert.equal(colorLevel({ isTTY: true }, { FORCE_COLOR: "7" }), 3);
+  assert.equal(colorLevel({ isTTY: true }, { NO_COLOR: "1" }), 0);
+});
+
+test("link refuses control characters in the URL (terminal escape injection)", () => {
+  const c = createColors({ level: 3 });
+  for (const bad of ["http://x\u0007\u001b]0;pwned\u0007", "http://x\u001b\\", "http://x\ny", "http://x\u009b31m"]) assert.throws(() => c.link(bad), TypeError);
+  assert.equal(c.link("https://example.com", "site"), "\u001b]8;;https://example.com\u001b\\site\u001b]8;;\u001b\\");
+  assert.equal(createColors({ level: 0 }).link("https://example.com", "site"), "site (https://example.com)");
+});
+
+test("truncate closes an open hyperlink, and never returns more than the columns", () => {
+  const c = createColors({ level: 3 });
+  const cut = truncate(c.link("https://example.com", "click here please"), 8);
+  assert.ok(cut.endsWith("\u001b]8;;\u001b\\…"));
+  assert.equal(width(cut), 8);
+  assert.equal(truncate("abcdef", 0), "");
+  assert.equal(truncate("abcdef", 1, { ellipsis: "..." }), ".");
+  for (const columns of [0, 1, 2, 3, 5, 10]) {
+    for (const text of ["abcdef gh", c.red("abc日本語def"), "👨‍👩‍👧👨‍👩‍👧👨‍👩‍👧", c.bold(c.green("nested ") + "text here")]) assert.ok(width(truncate(text, columns)) <= columns, `${columns} ${JSON.stringify(text)}`);
+  }
+});
+
+test("strip removes an unterminated title sequence up to the next escape", () => {
+  assert.equal(strip("a\u001b]0;title b\u001b[31mc"), "ac");
+  assert.equal(strip("a\u001b]0;title"), "a");
+  assert.equal(strip("\u001b]8;;http://x\u001b\\link\u001b]8;;\u001b\\ \u001b]0;title\u0007ok"), "link ok");
+});
+
+test("table input is checked: border names, rows, padding; tabs become spaces", () => {
+  assert.throws(() => table([["a"]], { border: "toString" }), RangeError);
+  assert.throws(() => table(["ab", "cd"]), TypeError);
+  assert.throws(() => table([["a"]], { padding: -1 }), RangeError);
+  assert.equal(table([["a\tb"]]), "a b");
+});
+
+test("progressBar and cursor check their numbers", () => {
+  assert.throws(() => progressBar(0.5, { width: -1 }), RangeError);
+  assert.throws(() => progressBar(0.5, { width: 2.5 }), RangeError);
+  assert.equal(progressBar(0.5, { width: 4, showPercent: false }), "██░░");
+  assert.equal(cursor.up(0), "");
+  assert.equal(cursor.up(2), "\u001b[2A");
+  assert.throws(() => cursor.up("1;31m"), RangeError);
+  assert.throws(() => cursor.down(-1), RangeError);
+});
