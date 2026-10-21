@@ -10,6 +10,8 @@ Colors, tables, progress bars and symbols for command line programs that behave 
 npm install @sandsoftwaresolutions/ansi-kit
 ```
 
+Works with `import` and `require()`, and ships TypeScript types for both.
+
 ## Usage
 
 ```js
